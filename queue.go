@@ -12,7 +12,8 @@ type Queue struct {
 	options         *Options
 	consumers       []Consumer
 	listenErrChan   chan error
-	listenEventChan chan *event
+	listenEventChan chan *Event
+	exts            []Extension
 }
 
 type Options struct {
@@ -57,10 +58,10 @@ func New(r *rabbus.Rabbus, o *Options) *Queue {
 	q := &Queue{
 		conn:            r,
 		listenErrChan:   make(chan error),
-		listenEventChan: make(chan *event),
+		listenEventChan: make(chan *Event),
 		options:         o,
 	}
-	q.listenEventChan <- &event{eventQueueInit, Consumer{}, nil, nil, 0}
+	go q.eventListener(q.listenEventChan)
 
 	return q
 }
@@ -78,6 +79,10 @@ func (q *Queue) Register(c Consumer) {
 	q.consumers = append(q.consumers, c)
 }
 
+func (q *Queue) RegisterExt(e Extension) {
+	q.exts = append(q.exts, e)
+}
+
 func (q *Queue) Run() {
 	for _, c := range q.consumers {
 		msgChan, err := q.conn.Listen(rabbus.ListenConfig{
@@ -87,7 +92,7 @@ func (q *Queue) Run() {
 			Queue:    c.QueueName,
 		})
 		if err != nil {
-			q.listenEventChan <- &event{eventConsumerUp, c, nil, err, 0}
+			q.listenEventChan <- &Event{EventConsumerUp, c, nil, err, q.options.Status(err), 0}
 			continue
 		}
 
@@ -109,11 +114,12 @@ func (q *Queue) handle(ch chan rabbus.ConsumerMessage, c Consumer) {
 			msg.Ack(true)
 		}
 
-		q.listenEventChan <- &event{
-			eventConsumerProcessedMessage,
+		q.listenEventChan <- &Event{
+			EventConsumerProcessedMessage,
 			c,
 			msg.Body,
 			err,
+			q.options.Status(err),
 			processTime,
 		}
 

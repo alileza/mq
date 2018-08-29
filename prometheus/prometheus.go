@@ -1,6 +1,9 @@
-package queue
+package prometheus
 
-import "github.com/prometheus/client_golang/prometheus"
+import (
+	"github.com/alileza/queue"
+	"github.com/prometheus/client_golang/prometheus"
+)
 
 const namespace = "queue"
 
@@ -33,8 +36,29 @@ var (
 	)
 )
 
-func prometheusRegister() {
+func init() {
 	prometheus.MustRegister(queueConsumerUp)
 	prometheus.MustRegister(queueConsumerProcessDurations)
 	prometheus.MustRegister(queueConsumerProcessCount)
+}
+
+type Prometheus struct{}
+
+func New() *Prometheus {
+	return &Prometheus{}
+}
+
+func (p *Prometheus) Handle(e *queue.Event) {
+	switch e.Kind {
+	case queue.EventConsumerUp:
+		var status float64
+		if e.Err == nil {
+			status = 1
+		}
+		queueConsumerUp.WithLabelValues(e.Consumer.Exchange, e.Consumer.RoutingKey, e.Consumer.QueueName).Set(status)
+
+	case queue.EventConsumerProcessedMessage:
+		queueConsumerProcessDurations.WithLabelValues(e.Consumer.Exchange, e.Consumer.RoutingKey, e.Status).Observe(e.ProcessDuration.Seconds())
+		queueConsumerProcessCount.WithLabelValues(e.Consumer.Exchange, e.Consumer.RoutingKey, e.Status).Inc()
+	}
 }
