@@ -3,15 +3,20 @@ package queue
 import (
 	"time"
 
+	"github.com/rafaeljesus/rabbus"
 	"github.com/sirupsen/logrus"
 )
 
 type Queue struct {
-	options   *Options
-	consumers []Consumer
+	conn            *rabbus.Rabbus
+	options         *Options
+	consumers       []Consumer
+	listenErrChan   chan error
+	listenEventChan chan *event
 }
 
 type Options struct {
+	Datasource string
 	Retry      func(error) bool
 	Status     func(error) string
 	Logger     *logrus.Logger
@@ -35,7 +40,7 @@ var DefaultOptions = &Options{
 	Logger:     logrus.StandardLogger(),
 }
 
-func New(o *Options) *Queue {
+func New(r *rabbus.Rabbus, o *Options) *Queue {
 	if o == nil {
 		o = DefaultOptions
 	}
@@ -49,13 +54,15 @@ func New(o *Options) *Queue {
 		o.Logger = DefaultOptions.Logger
 	}
 
-	if o.Prometheus {
-		prometheusRegister()
+	q := &Queue{
+		conn:            r,
+		listenErrChan:   make(chan error),
+		listenEventChan: make(chan *event),
+		options:         o,
 	}
+	q.listenEventChan <- &event{eventQueueInit, Consumer{}, nil, nil, 0}
 
-	return &Queue{
-		options: o,
-	}
+	return q
 }
 
 type Handler func([]byte) error
@@ -63,6 +70,7 @@ type Handler func([]byte) error
 type Consumer struct {
 	Exchange   string
 	RoutingKey string
+	QueueName  string
 	Handle     Handler
 }
 
@@ -72,45 +80,54 @@ func (q *Queue) Register(c Consumer) {
 
 func (q *Queue) Run() {
 	for _, c := range q.consumers {
-		ch := listen(c.Exchange, c.RoutingKey)
+		msgChan, err := q.conn.Listen(rabbus.ListenConfig{
+			Exchange: c.Exchange,
+			Kind:     "topic",
+			Key:      c.RoutingKey,
+			Queue:    c.QueueName,
+		})
+		if err != nil {
+			q.listenEventChan <- &event{eventConsumerUp, c, nil, err, 0}
+			continue
+		}
 
-		go func(c Consumer, ch <-chan *Message) {
-			log := q.options.Logger.
-				WithField("exchange", c.Exchange).
-				WithField("routing-key", c.RoutingKey)
-			for {
-				msg := <-ch
-
-				t := time.Now()
-				err := c.Handle(msg.Body)
-				processDuration := time.Since(t)
-				if q.options.Retry(err) {
-					msg.Ack(false)
-				}
-				if err != nil {
-					log.
-						WithField("payload", msg.Body).
-						WithField("process_duration", processDuration).
-						WithError(err).
-						Error("failed to process queue")
-				}
-
-				if q.options.Prometheus {
-					queueConsumerProcessDurations.WithLabelValues(c.Exchange, c.RoutingKey, q.options.Status(err)).Observe(processDuration.Seconds())
-					queueConsumerProcessCount.WithLabelValues(c.Exchange, c.RoutingKey, q.options.Status(err)).Inc()
-				}
-
-			}
-		}(c, ch)
+		go q.handle(msgChan, c)
 	}
 }
 
-type Message struct {
-	Body []byte
+func (q *Queue) handle(ch chan rabbus.ConsumerMessage, c Consumer) {
+	for {
+		msg := <-ch
+
+		t := time.Now()
+		err := c.Handle(msg.Body)
+		processTime := time.Since(t)
+
+		if q.options.Retry(err) {
+			msg.Ack(false)
+		} else {
+			msg.Ack(true)
+		}
+
+		q.listenEventChan <- &event{
+			eventConsumerProcessedMessage,
+			c,
+			msg.Body,
+			err,
+			processTime,
+		}
+
+	}
 }
 
-func (m *Message) Ack(bool) {}
+func (q *Queue) Close() error {
+	if q.conn == nil {
+		return nil
+	}
+	return q.conn.Close()
+}
 
-func listen(exchange, routingKey string) <-chan *Message {
-	return make(chan *Message)
+// ListenError returns the receive-only channel that signals errors while starting the mq server.
+func (q *Queue) ListenError() <-chan error {
+	return q.listenErrChan
 }

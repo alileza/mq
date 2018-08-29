@@ -2,26 +2,39 @@ package queue
 
 import "github.com/prometheus/client_golang/prometheus"
 
+const namespace = "queue"
+
 var (
+	queueConsumerUp = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "consumer_up",
+			Help:      "Queue consumer status up",
+		},
+		[]string{"exchange", "key", "queue"},
+	)
+
 	queueConsumerProcessDurations = prometheus.NewSummaryVec(
 		prometheus.SummaryOpts{
-			Name: "queue_consumer_process_durations_seconds",
-			Help: "Queue consumer process time",
+			Namespace: namespace,
+			Name:      "consumer_process_durations_seconds",
+			Help:      "Queue consumer process time",
 		},
-		[]string{"exchange", "kind", "key", "queue", "status"},
+		[]string{"exchange", "key", "queue", "status"},
 	)
 
 	queueConsumerProcessCount = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
-			Name: "queue_consumer_process_count",
-			Help: "Queue consumer process count",
+			Namespace: namespace,
+			Name:      "consumer_process_count",
+			Help:      "Queue consumer process count",
 		},
-		[]string{"exchange", "kind", "key", "queue", "status"},
+		[]string{"exchange", "key", "queue", "status"},
 	)
 )
 
 func prometheusRegister() {
+	prometheus.MustRegister(queueConsumerUp)
 	prometheus.MustRegister(queueConsumerProcessDurations)
 	prometheus.MustRegister(queueConsumerProcessCount)
-
 }
